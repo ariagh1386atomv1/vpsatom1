@@ -1,4 +1,3 @@
-```yaml
 name: Minecraft 1.21.9 Server
 
 on:
@@ -473,4 +472,3 @@ jobs:
                   exit 1
               }
           }
-```
