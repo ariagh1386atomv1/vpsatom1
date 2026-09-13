@@ -1,4 +1,4 @@
-name: Minecraft 1.21.9 Server
+name: Minecraft Java Server 1.21.9
 
 on:
   workflow_dispatch:
@@ -6,206 +6,249 @@ on:
 jobs:
   minecraft:
     runs-on: windows-latest
-    timeout-minutes: 350
+
+    # GitHub-hosted runner حداکثر 6 ساعت
+    timeout-minutes: 360
 
     steps:
 
-      # ============================================================
-      # 1. SYSTEM INFO
-      # ============================================================
+      # =========================================================
+      # 1. BASIC SYSTEM INFO
+      # =========================================================
       - name: 1. System Information
         shell: powershell
         run: |
-          Write-Host "========================================" -ForegroundColor Cyan
-          Write-Host "       MINECRAFT SERVER SETUP" -ForegroundColor Cyan
-          Write-Host "========================================" -ForegroundColor Cyan
+          $ErrorActionPreference = "Stop"
 
-          Write-Host ""
-          Write-Host "OS:"
+          Write-Host "========================================="
+          Write-Host " SYSTEM INFORMATION"
+          Write-Host "========================================="
+
           Get-CimInstance Win32_OperatingSystem |
-            Select-Object Caption, Version, OSArchitecture
+            Select-Object Caption, Version, OSArchitecture,
+              @{Name="RAM_GB";Expression={[math]::Round($_.TotalVisibleMemorySize / 1MB, 2)}}
 
           Write-Host ""
           Write-Host "CPU:"
           Get-CimInstance Win32_Processor |
             Select-Object Name, NumberOfCores, NumberOfLogicalProcessors
 
-          Write-Host ""
-          Write-Host "RAM:"
-          $ram = Get-CimInstance Win32_ComputerSystem
-          "{0:N2} GB" -f ($ram.TotalPhysicalMemory / 1GB)
 
-      # ============================================================
-      # 2. INSTALL JAVA 21
-      # ============================================================
+      # =========================================================
+      # 2. INSTALL / VERIFY JAVA 21
+      # =========================================================
       - name: 2. Install Java 21
         shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
 
-          Write-Host "[INFO] Checking Java..."
+          Write-Host "Checking Java..."
 
-          $java = Get-Command java -ErrorAction SilentlyContinue
+          $java21 = $false
 
-          if ($java) {
-              java -version
-              Write-Host "[OK] Java already exists."
-          }
-          else {
-              Write-Host "[INFO] Installing Temurin Java 21..."
+          try {
+              $versionOutput = & java -version 2>&1 | Out-String
+              Write-Host $versionOutput
 
-              $url = "https://api.adoptium.net/v3/installer/latest/21/ga/windows/x64/jdk/hotspot/normal/eclipse?project=jdk"
-
-              Invoke-WebRequest `
-                -Uri $url `
-                -OutFile "$env:TEMP\temurin21.msi"
-
-              Start-Process `
-                msiexec.exe `
-                -ArgumentList "/i `"$env:TEMP\temurin21.msi`" /qn /norestart" `
-                -Wait
-
-              $env:Path += ";C:\Program Files\Eclipse Adoptium\jdk-21*\bin"
-
-              $javaExe = Get-ChildItem `
-                "C:\Program Files\Eclipse Adoptium" `
-                -Filter java.exe `
-                -Recurse `
-                -ErrorAction SilentlyContinue |
-                Select-Object -First 1
-
-              if (-not $javaExe) {
-                  throw "Java 21 installation failed."
+              if ($versionOutput -match 'version "21\.') {
+                  $java21 = $true
               }
-
-              $javaDir = Split-Path $javaExe.FullName
-              $env:Path += ";$javaDir"
-
-              Write-Host "[OK] Java installed."
-              & $javaExe.FullName -version
+          }
+          catch {
+              $java21 = $false
           }
 
-      # ============================================================
+          if (-not $java21) {
+              Write-Host "Java 21 not found. Installing Temurin 21..."
+
+              winget install `
+                --id EclipseAdoptium.Temurin.21.JDK `
+                --exact `
+                --silent `
+                --accept-package-agreements `
+                --accept-source-agreements
+
+              $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" +
+                          [System.Environment]::GetEnvironmentVariable("Path","User")
+
+              Start-Sleep -Seconds 5
+          }
+
+          Write-Host ""
+          Write-Host "Final Java version:"
+          java -version
+
+
+      # =========================================================
       # 3. CREATE MINECRAFT DIRECTORY
-      # ============================================================
-      - name: 3. Create Minecraft Directory
+      # =========================================================
+      - name: 3. Create Minecraft Server Directory
         shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
 
-          $MinecraftDir = "C:\Minecraft"
+          $serverDir = "C:\Minecraft"
 
-          if (Test-Path $MinecraftDir) {
-              Remove-Item $MinecraftDir -Recurse -Force
+          if (Test-Path $serverDir) {
+              Remove-Item $serverDir -Recurse -Force
           }
 
-          New-Item `
-            -ItemType Directory `
-            -Path $MinecraftDir `
-            -Force | Out-Null
+          New-Item -ItemType Directory -Path $serverDir -Force | Out-Null
 
-          Write-Host "[OK] Minecraft directory created:"
-          Write-Host $MinecraftDir
+          Write-Host "Minecraft directory:"
+          Write-Host $serverDir
 
-      # ============================================================
+
+      # =========================================================
       # 4. DOWNLOAD PAPER 1.21.9
-      # ============================================================
+      # =========================================================
       - name: 4. Download Paper 1.21.9
         shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
 
-          $MinecraftDir = "C:\Minecraft"
+          $minecraftVersion = "1.21.9"
+          $serverDir = "C:\Minecraft"
 
-          Write-Host "[INFO] Getting latest Paper build for 1.21.9..."
+          $userAgent = "Minecraft-GitHub-Actions-Server/1.0 (https://github.com/)"
 
-          $api = "https://api.papermc.io/v2/projects/paper/versions/1.21.9"
+          Write-Host "========================================="
+          Write-Host " PAPER DOWNLOAD"
+          Write-Host "========================================="
 
-          $versionInfo = Invoke-RestMethod -Uri $api
+          Write-Host "Minecraft version: $minecraftVersion"
 
-          $build = ($versionInfo.builds | Select-Object -Last 1)
+          $api = "https://fill.papermc.io/v3/projects/paper/versions/$minecraftVersion/builds"
 
-          if (-not $build) {
-              throw "Could not find Paper build for Minecraft 1.21.9."
+          Write-Host "Querying:"
+          Write-Host $api
+
+          $headers = @{
+              "User-Agent" = $userAgent
+              "Accept"     = "application/json"
           }
 
-          Write-Host "[INFO] Paper build: $build"
+          $builds = Invoke-RestMethod `
+              -Uri $api `
+              -Headers $headers `
+              -Method Get
 
-          $buildInfo = Invoke-RestMethod `
-            -Uri "$api/builds/$build"
+          if (-not $builds) {
+              throw "No Paper builds returned for Minecraft $minecraftVersion"
+          }
 
-          $fileName = $buildInfo.downloads.application.name
+          # فقط Stable ها
+          $stableBuilds = @(
+              $builds |
+              Where-Object { $_.channel -eq "STABLE" }
+          )
 
-          $downloadUrl = "https://api.papermc.io/v2/projects/paper/versions/1.21.9/builds/$build/downloads/$fileName"
+          if ($stableBuilds.Count -eq 0) {
+              throw "No STABLE Paper build found for Minecraft $minecraftVersion"
+          }
 
-          Write-Host "[INFO] Downloading:"
+          # بالاترین build
+          $latestBuild = $stableBuilds |
+              Sort-Object { [int]$_.id } -Descending |
+              Select-Object -First 1
+
+          $buildNumber = $latestBuild.id
+
+          $downloadUrl = $latestBuild.downloads."server:default".url
+
+          if (-not $downloadUrl) {
+              throw "Could not find Paper download URL."
+          }
+
+          Write-Host ""
+          Write-Host "Paper build:"
+          Write-Host $buildNumber
+
+          Write-Host ""
+          Write-Host "Download URL:"
           Write-Host $downloadUrl
 
-          Invoke-WebRequest `
-            -Uri $downloadUrl `
-            -OutFile "$MinecraftDir\paper.jar"
+          Write-Host ""
+          Write-Host "Downloading Paper..."
 
-          if (-not (Test-Path "$MinecraftDir\paper.jar")) {
-              throw "Paper download failed."
+          Invoke-WebRequest `
+              -Uri $downloadUrl `
+              -Headers $headers `
+              -OutFile "$serverDir\paper.jar"
+
+          if (-not (Test-Path "$serverDir\paper.jar")) {
+              throw "paper.jar was not downloaded."
           }
 
-          Write-Host "[OK] Paper downloaded."
-          Get-Item "$MinecraftDir\paper.jar" |
-            Select-Object Name, Length
+          $sizeMB = [math]::Round(
+              (Get-Item "$serverDir\paper.jar").Length / 1MB,
+              2
+          )
 
-      # ============================================================
+          Write-Host ""
+          Write-Host "Paper downloaded successfully."
+          Write-Host "Size: $sizeMB MB"
+
+
+      # =========================================================
       # 5. ACCEPT EULA
-      # ============================================================
+      # =========================================================
       - name: 5. Accept Minecraft EULA
         shell: powershell
         run: |
-          $MinecraftDir = "C:\Minecraft"
+          $ErrorActionPreference = "Stop"
 
-          Set-Content `
-            -Path "$MinecraftDir\eula.txt" `
-            -Value "eula=true" `
-            -Encoding ASCII
+          Set-Location C:\Minecraft
 
-          Write-Host "[OK] EULA accepted."
+          "eula=true" | Set-Content -Path "eula.txt" -Encoding ASCII
 
-      # ============================================================
-      # 6. CREATE SERVER.PROPERTIES
-      # ============================================================
-      - name: 6. Configure Minecraft
+          Write-Host "EULA accepted."
+
+
+      # =========================================================
+      # 6. SERVER.PROPERTIES
+      # =========================================================
+      - name: 6. Configure Minecraft Server
         shell: powershell
         run: |
-          $MinecraftDir = "C:\Minecraft"
+          $ErrorActionPreference = "Stop"
+
+          $serverDir = "C:\Minecraft"
 
           @"
           server-port=25565
           server-ip=
-          online-mode=true
-          motd=GitHub Minecraft Server
           max-players=5
-          view-distance=10
-          simulation-distance=8
+          online-mode=true
           difficulty=normal
           gamemode=survival
-          spawn-protection=0
-          enable-command-block=false
-          allow-flight=false
           pvp=true
-          enable-rcon=false
+          spawn-protection=0
+          view-distance=8
+          simulation-distance=6
+          enable-command-block=false
+          motd=GitHub Actions Minecraft 1.21.9
+          enable-status=true
+          allow-flight=false
           white-list=false
           enforce-whitelist=false
-          enable-status=true
-          hide-online-players=false
-          @ | Set-Content "$MinecraftDir\server.properties" -Encoding ASCII
+          "@" | Set-Content "$serverDir\server.properties" -Encoding ASCII
 
-          Write-Host "[OK] server.properties created."
+          Write-Host "server.properties created."
 
-      # ============================================================
+          Write-Host ""
+          Get-Content "$serverDir\server.properties"
+
+
+      # =========================================================
       # 7. WINDOWS FIREWALL
-      # ============================================================
+      # =========================================================
       - name: 7. Configure Windows Firewall
         shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
+
+          Write-Host "Configuring Windows Firewall..."
 
           Get-NetFirewallRule `
             -DisplayName "Minecraft Server TCP 25565" `
@@ -221,45 +264,86 @@ jobs:
             -Action Allow `
             -Profile Any
 
-          Write-Host "[OK] TCP 25565 opened in Windows Firewall."
+          Write-Host "Firewall rule created."
 
-      # ============================================================
-      # 8. CREATE START SCRIPT
-      # ============================================================
-      - name: 8. Create Minecraft Start Script
+          Get-NetFirewallRule `
+            -DisplayName "Minecraft Server TCP 25565" |
+            Format-List DisplayName, Enabled, Direction, Action
+
+
+      # =========================================================
+      # 8. CALCULATE RAM
+      # =========================================================
+      - name: 8. Configure Minecraft RAM
         shell: powershell
         run: |
-          $MinecraftDir = "C:\Minecraft"
+          $ErrorActionPreference = "Stop"
 
-          @"
-          @echo off
-          cd /d C:\Minecraft
+          $ramGB = [math]::Round(
+              (Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1GB,
+              1
+          )
 
-          java -Xms6G -Xmx6G -XX:+UseG1GC -XX:+ParallelRefProcEnabled -XX:MaxGCPauseMillis=200 -XX:+UnlockExperimentalVMOptions -XX:+DisableExplicitGC -XX:G1NewSizePercent=30 -XX:G1MaxNewSizePercent=40 -XX:G1HeapRegionSize=8M -XX:G1ReservePercent=20 -XX:G1HeapWastePercent=5 -XX:G1MixedGCCountTarget=4 -XX:InitiatingHeapOccupancyPercent=15 -XX:G1MixedGCLiveThresholdPercent=90 -XX:G1RSetUpdatingPauseTimePercent=5 -XX:SurvivorRatio=32 -XX:+PerfDisableSharedMem -jar paper.jar --nogui
+          Write-Host "Detected RAM: $ramGB GB"
 
-          pause
-          "@ | Set-Content "$MinecraftDir\start.bat" -Encoding ASCII
+          # هدف 6GB برای Minecraft
+          # حداقل 2GB برای Windows نگه می‌داریم.
+          if ($ramGB -ge 8) {
+              $minecraftRam = 6
+          }
+          elseif ($ramGB -ge 6) {
+              $minecraftRam = 4
+          }
+          else {
+              $minecraftRam = 3
+          }
 
-          Write-Host "[OK] Start script created."
+          Write-Host "Minecraft RAM: ${minecraftRam}G"
 
-      # ============================================================
-      # 9. START MINECRAFT
-      # ============================================================
+          "MINECRAFT_RAM=${minecraftRam}G" | Out-File `
+              -FilePath $env:GITHUB_ENV `
+              -Encoding utf8 `
+              -Append
+
+
+      # =========================================================
+      # 9. START MINECRAFT SERVER
+      # =========================================================
       - name: 9. Start Minecraft Server
         shell: powershell
         run: |
-          $MinecraftDir = "C:\Minecraft"
+          $ErrorActionPreference = "Stop"
 
-          Write-Host "[INFO] Starting Minecraft..."
+          Set-Location C:\Minecraft
+
+          Write-Host "Starting Minecraft..."
+
+          $javaArgs = @(
+              "-Xms$env:MINECRAFT_RAM",
+              "-Xmx$env:MINECRAFT_RAM",
+              "-XX:+UseG1GC",
+              "-XX:+ParallelRefProcEnabled",
+              "-XX:MaxGCPauseMillis=200",
+              "-jar",
+              "paper.jar",
+              "--nogui"
+          )
 
           $process = Start-Process `
-            -FilePath "cmd.exe" `
-            -ArgumentList "/c `"$MinecraftDir\start.bat`"" `
-            -WorkingDirectory $MinecraftDir `
-            -WindowStyle Hidden `
-            -PassThru
+              -FilePath "java" `
+              -ArgumentList $javaArgs `
+              -WorkingDirectory "C:\Minecraft" `
+              -RedirectStandardOutput "C:\Minecraft\server.log" `
+              -RedirectStandardError "C:\Minecraft\server-error.log" `
+              -PassThru
 
-          Write-Host "[INFO] Minecraft PID: $($process.Id)"
+          $process.Id | Out-File `
+              -FilePath "C:\Minecraft\server.pid" `
+              -Encoding ASCII
+
+          Write-Host "Minecraft PID: $($process.Id)"
+
+          Write-Host "Waiting for server..."
 
           $ready = $false
 
@@ -267,208 +351,416 @@ jobs:
 
               Start-Sleep -Seconds 2
 
-              $log = "$MinecraftDir\logs\latest.log"
+              if (Test-Path "C:\Minecraft\server.log") {
 
-              if (Test-Path $log) {
+                  $log = Get-Content `
+                      "C:\Minecraft\server.log" `
+                      -Raw `
+                      -ErrorAction SilentlyContinue
 
-                  $content = Get-Content $log -Raw
-
-                  if ($content -match "Done") {
+                  if ($log -match "Done \(") {
                       $ready = $true
                       break
                   }
               }
 
-              Write-Host "[WAIT] Minecraft starting... $i/60"
+              Write-Host "Waiting... $i/60"
           }
 
           if (-not $ready) {
-              Write-Host "===== LAST LOG ====="
 
-              if (Test-Path "$MinecraftDir\logs\latest.log") {
-                  Get-Content "$MinecraftDir\logs\latest.log" -Tail 100
+              Write-Host ""
+              Write-Host "===== SERVER LOG ====="
+
+              if (Test-Path "C:\Minecraft\server.log") {
+                  Get-Content "C:\Minecraft\server.log" -Tail 100
               }
 
-              throw "Minecraft server failed to start."
+              Write-Host ""
+              Write-Host "===== SERVER ERROR ====="
+
+              if (Test-Path "C:\Minecraft\server-error.log") {
+                  Get-Content "C:\Minecraft\server-error.log" -Tail 100
+              }
+
+              throw "Minecraft server did not become ready."
           }
 
-          Write-Host "[OK] Minecraft server is READY."
+          Write-Host ""
+          Write-Host "Minecraft server is READY."
 
-      # ============================================================
-      # 10. TEST LOCAL PORT
-      # ============================================================
+
+      # =========================================================
+      # 10. LOCAL CONNECTION TEST
+      # =========================================================
       - name: 10. Test Minecraft Local Port
-        shell: powershell
-        run: |
-          Write-Host "[INFO] Testing 127.0.0.1:25565..."
-
-          $result = Test-NetConnection `
-            127.0.0.1 `
-            -Port 25565 `
-            -WarningAction SilentlyContinue
-
-          if (-not $result.TcpTestSucceeded) {
-              throw "Minecraft local port test FAILED."
-          }
-
-          Write-Host "[OK] Minecraft local TCP test PASSED."
-
-      # ============================================================
-      # 11. INSTALL PLAYIT
-      # ============================================================
-      - name: 11. Install playit
         shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
 
-          $PlayitDir = "C:\playit"
+          Write-Host "Testing 127.0.0.1:25565..."
 
-          New-Item `
-            -ItemType Directory `
-            -Path $PlayitDir `
-            -Force | Out-Null
+          $result = Test-NetConnection `
+              -ComputerName 127.0.0.1 `
+              -Port 25565 `
+              -WarningAction SilentlyContinue
 
-          Write-Host "[INFO] Downloading playit..."
-
-          $url = "https://github.com/playit-cloud/playit-agent/releases/latest/download/playit-windows-amd64.exe"
-
-          Invoke-WebRequest `
-            -Uri $url `
-            -OutFile "$PlayitDir\playit.exe"
-
-          if (-not (Test-Path "$PlayitDir\playit.exe")) {
-              throw "playit download failed."
-          }
-
-          Write-Host "[OK] playit downloaded."
-
-      # ============================================================
-      # 12. START PLAYIT
-      # ============================================================
-      - name: 12. Start playit Tunnel
-        shell: powershell
-        run: |
-          $PlayitDir = "C:\playit"
-
-          Write-Host "========================================"
-          Write-Host "       STARTING PLAYIT TUNNEL"
-          Write-Host "========================================"
-
-          $process = Start-Process `
-            -FilePath "$PlayitDir\playit.exe" `
-            -WorkingDirectory $PlayitDir `
-            -RedirectStandardOutput "$PlayitDir\stdout.log" `
-            -RedirectStandardError "$PlayitDir\stderr.log" `
-            -PassThru
-
-          Write-Host "[INFO] playit PID: $($process.Id)"
-
-          Start-Sleep -Seconds 10
-
-          if (Test-Path "$PlayitDir\stdout.log") {
-              Get-Content "$PlayitDir\stdout.log" -Tail 100
+          if (-not $result.TcpTestSucceeded) {
+              throw "Minecraft local TCP port 25565 is NOT reachable."
           }
 
           Write-Host ""
-          Write-Host "IMPORTANT:"
-          Write-Host "If playit asks for an activation/link, open the URL shown above."
-          Write-Host "The tunnel may require first-time account activation."
+          Write-Host "SUCCESS: 127.0.0.1:25565 is OPEN."
 
-      # ============================================================
-      # 13. WAIT FOR PLAYIT
-      # ============================================================
-      - name: 13. Wait for Tunnel
+
+      # =========================================================
+      # 11. INSTALL PLAYIT
+      # =========================================================
+      - name: 11. Install Playit
         shell: powershell
         run: |
-          $PlayitDir = "C:\playit"
+          $ErrorActionPreference = "Stop"
 
-          Write-Host "[INFO] Waiting for playit tunnel..."
+          Write-Host "Installing Playit..."
+
+          winget install `
+            --id DevelopedMethods.playit `
+            --exact `
+            --silent `
+            --accept-package-agreements `
+            --accept-source-agreements
+
+          $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" +
+                      [System.Environment]::GetEnvironmentVariable("Path","User")
+
+          Start-Sleep -Seconds 5
+
+          Write-Host ""
+          Write-Host "Searching for playit.exe..."
+
+          $playit = Get-ChildItem `
+              -Path "C:\Program Files","C:\Program Files (x86)" `
+              -Filter "playit.exe" `
+              -Recurse `
+              -ErrorAction SilentlyContinue |
+              Select-Object -First 1
+
+          if (-not $playit) {
+              throw "playit.exe was not found after installation."
+          }
+
+          Write-Host "Playit found:"
+          Write-Host $playit.FullName
+
+          "PLAYIT_EXE=$($playit.FullName)" | Out-File `
+              -FilePath $env:GITHUB_ENV `
+              -Encoding utf8 `
+              -Append
+
+
+      # =========================================================
+      # 12. START PLAYIT
+      # =========================================================
+      #
+      # IMPORTANT:
+      # Add PLAYIT_SECRET to:
+      # GitHub Repository
+      # Settings
+      # Secrets and variables
+      # Actions
+      #
+      # This must be your Playit agent secret.
+      #
+      # =========================================================
+      - name: 12. Start Playit Tunnel
+        shell: powershell
+        env:
+          PLAYIT_SECRET: ${{ secrets.PLAYIT_SECRET }}
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          if ([string]::IsNullOrWhiteSpace($env:PLAYIT_SECRET)) {
+              throw @"
+          PLAYIT_SECRET is missing.
+
+          Create a GitHub Actions secret named:
+          PLAYIT_SECRET
+
+          Put your Playit agent secret there.
+          "@
+          }
+
+          Write-Host "Starting Playit agent..."
+
+          $logFile = "C:\Minecraft\playit.log"
+
+          $args = @(
+              "--secret",
+              $env:PLAYIT_SECRET
+          )
+
+          $playitProcess = Start-Process `
+              -FilePath $env:PLAYIT_EXE `
+              -ArgumentList $args `
+              -WorkingDirectory "C:\Minecraft" `
+              -RedirectStandardOutput $logFile `
+              -RedirectStandardError "C:\Minecraft\playit-error.log" `
+              -PassThru
+
+          $playitProcess.Id | Out-File `
+              "C:\Minecraft\playit.pid" `
+              -Encoding ASCII
+
+          Write-Host "Playit PID: $($playitProcess.Id)"
+
+          Start-Sleep -Seconds 15
+
+          Write-Host ""
+          Write-Host "===== PLAYIT OUTPUT ====="
+
+          if (Test-Path $logFile) {
+              Get-Content $logFile -Tail 100
+          }
+
+          Write-Host ""
+          Write-Host "Playit started."
+
+
+      # =========================================================
+      # 13. FIND PUBLIC PLAYIT ADDRESS
+      # =========================================================
+      - name: 13. Get Public Minecraft Address
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $logFile = "C:\Minecraft\playit.log"
+
+          Write-Host "Waiting for Playit public tunnel..."
+
+          $found = $false
+          $address = $null
 
           for ($i = 1; $i -le 30; $i++) {
 
-              Start-Sleep -Seconds 2
+              Start-Sleep -Seconds 5
 
-              Write-Host ""
-              Write-Host "----- playit output $i/30 -----"
+              if (Test-Path $logFile) {
 
-              if (Test-Path "$PlayitDir\stdout.log") {
-                  Get-Content "$PlayitDir\stdout.log" -Tail 50
-              }
+                  $log = Get-Content `
+                      $logFile `
+                      -Raw `
+                      -ErrorAction SilentlyContinue
 
-              if (Test-Path "$PlayitDir\stderr.log") {
-                  Get-Content "$PlayitDir\stderr.log" -Tail 20
+                  Write-Host ""
+                  Write-Host "Checking Playit output... $i/30"
+
+                  # Common playit address formats
+                  $patterns = @(
+                      '(?i)([a-zA-Z0-9.-]+\.playit\.gg):([0-9]+)',
+                      '(?i)([a-zA-Z0-9.-]+\.gl\.at\.ply\.gg):([0-9]+)',
+                      '(?i)([a-zA-Z0-9.-]+):([0-9]{4,6})'
+                  )
+
+                  foreach ($pattern in $patterns) {
+
+                      $match = [regex]::Match($log, $pattern)
+
+                      if ($match.Success) {
+
+                          $candidateHost = $match.Groups[1].Value
+                          $candidatePort = $match.Groups[2].Value
+
+                          if (
+                              $candidateHost -notmatch "127\.0\.0\.1" -and
+                              $candidateHost -notmatch "localhost" -and
+                              $candidatePort -ne "25565"
+                          ) {
+                              $address = "$candidateHost`:$candidatePort"
+                              $found = $true
+                              break
+                          }
+                      }
+                  }
+
+                  if ($found) {
+                      break
+                  }
               }
           }
 
-      # ============================================================
-      # 14. FINAL STATUS
-      # ============================================================
-      - name: 14. Final Server Status
-        if: always()
+          Write-Host ""
+          Write-Host "========================================="
+          Write-Host " MINECRAFT PUBLIC ADDRESS"
+          Write-Host "========================================="
+
+          if ($found) {
+
+              Write-Host ""
+              Write-Host "JOIN ADDRESS:"
+              Write-Host $address
+
+              Write-Host ""
+              Write-Host "========================================="
+
+              @"
+          # Minecraft Server
+
+          ## Public Address
+
+          `$address`
+
+          ## Version
+
+          Minecraft Java 1.21.9
+
+          ## Players
+
+          Maximum: 5
+
+          ## Port
+
+          Local: 25565
+
+          ## Server
+
+          Paper
+          "@ | Out-File `
+                  -FilePath "$env:GITHUB_STEP_SUMMARY" `
+                  -Encoding utf8
+
+              "MINECRAFT_PUBLIC_ADDRESS=$address" |
+                  Out-File `
+                  -FilePath $env:GITHUB_ENV `
+                  -Encoding utf8 `
+                  -Append
+
+          }
+          else {
+
+              Write-Host ""
+              Write-Host "Could not automatically detect public address."
+
+              Write-Host ""
+              Write-Host "===== FULL PLAYIT LOG ====="
+
+              if (Test-Path $logFile) {
+                  Get-Content $logFile
+              }
+
+              Write-Host ""
+              Write-Host "The Playit agent may require the tunnel to already exist."
+          }
+
+
+      # =========================================================
+      # 14. FINAL DIAGNOSTICS
+      # =========================================================
+      - name: 14. Final Diagnostics
         shell: powershell
         run: |
           Write-Host ""
-          Write-Host "==================================================" -ForegroundColor Cyan
-          Write-Host "          MINECRAFT SERVER STATUS" -ForegroundColor Cyan
-          Write-Host "==================================================" -ForegroundColor Cyan
+          Write-Host "========================================="
+          Write-Host " FINAL SERVER STATUS"
+          Write-Host "========================================="
 
           Write-Host ""
-          Write-Host "Minecraft:"
-          Get-Process java -ErrorAction SilentlyContinue |
-            Select-Object Id, CPU, WorkingSet64
+          Write-Host "Minecraft process:"
+
+          Get-Process java `
+              -ErrorAction SilentlyContinue |
+              Select-Object Id, ProcessName, CPU, WorkingSet64
 
           Write-Host ""
-          Write-Host "Local Port:"
-          $test = Test-NetConnection `
-            127.0.0.1 `
-            -Port 25565 `
-            -WarningAction SilentlyContinue
+          Write-Host "Port 25565:"
 
-          if ($test.TcpTestSucceeded) {
-              Write-Host "[OK] 127.0.0.1:25565" -ForegroundColor Green
-          }
-          else {
-              Write-Host "[FAIL] 127.0.0.1:25565" -ForegroundColor Red
-          }
-
-          Write-Host ""
-          Write-Host "Listening sockets:"
           Get-NetTCPConnection `
-            -LocalPort 25565 `
-            -State Listen `
-            -ErrorAction SilentlyContinue
+              -LocalPort 25565 `
+              -State Listen `
+              -ErrorAction SilentlyContinue |
+              Format-Table LocalAddress, LocalPort, State, OwningProcess
 
           Write-Host ""
-          Write-Host "=================================================="
-          Write-Host "      CHECK PLAYIT OUTPUT ABOVE FOR ADDRESS"
-          Write-Host "=================================================="
+          Write-Host "Firewall:"
 
-      # ============================================================
-      # 15. KEEP SERVER ALIVE
-      # ============================================================
+          Get-NetFirewallRule `
+              -DisplayName "Minecraft Server TCP 25565" `
+              -ErrorAction SilentlyContinue |
+              Format-List DisplayName, Enabled, Direction, Action
+
+          Write-Host ""
+          Write-Host "Minecraft log:"
+          Get-Content "C:\Minecraft\server.log" -Tail 30
+
+          Write-Host ""
+          Write-Host "Playit log:"
+          if (Test-Path "C:\Minecraft\playit.log") {
+              Get-Content "C:\Minecraft\playit.log" -Tail 50
+          }
+
+
+      # =========================================================
+      # 15. KEEP RUNNER ALIVE
+      # =========================================================
       - name: 15. Keep Minecraft Server Alive
         shell: powershell
         run: |
-          Write-Host ""
-          Write-Host "==================================================" -ForegroundColor Green
-          Write-Host "      MINECRAFT SERVER IS RUNNING" -ForegroundColor Green
-          Write-Host "==================================================" -ForegroundColor Green
-          Write-Host ""
-          Write-Host "The GitHub Actions runner is temporary."
-          Write-Host "Maximum workflow runtime: approximately 6 hours."
-          Write-Host ""
-          Write-Host "Keep this workflow running while playing."
-          Write-Host ""
+          $ErrorActionPreference = "Continue"
 
-          for ($i = 1; $i -le 340; $i++) {
+          Write-Host ""
+          Write-Host "========================================="
+          Write-Host " MINECRAFT SERVER IS RUNNING"
+          Write-Host "========================================="
+
+          if ($env:MINECRAFT_PUBLIC_ADDRESS) {
+              Write-Host ""
+              Write-Host "PUBLIC ADDRESS:"
+              Write-Host $env:MINECRAFT_PUBLIC_ADDRESS
+          }
+
+          Write-Host ""
+          Write-Host "Server directory: C:\Minecraft"
+          Write-Host "Minecraft port: 25565"
+          Write-Host "Max players: 5"
+
+          # حدود 5 ساعت و 45 دقیقه
+          # چون Job خودش 6 ساعت timeout دارد.
+          for ($i = 1; $i -le 345; $i++) {
 
               Start-Sleep -Seconds 60
 
-              if (Get-Process java -ErrorAction SilentlyContinue) {
-                  Write-Host "[$i/340] Minecraft running..."
-              }
-              else {
-                  Write-Host "[ERROR] Minecraft process stopped." -ForegroundColor Red
+              $minecraft = Get-Process java `
+                  -ErrorAction SilentlyContinue
+
+              $playit = Get-Process `
+                  -ErrorAction SilentlyContinue |
+                  Where-Object {
+                      $_.Path -eq $env:PLAYIT_EXE
+                  }
+
+              if (-not $minecraft) {
+                  Write-Host ""
+                  Write-Host "WARNING: Minecraft process stopped."
+
+                  if (Test-Path "C:\Minecraft\server.log") {
+                      Get-Content "C:\Minecraft\server.log" -Tail 50
+                  }
+
                   exit 1
               }
+
+              Write-Host "[$i/345] Minecraft running | PID: $($minecraft.Id)"
           }
+
+
+      # =========================================================
+      # 16. UPLOAD LOGS
+      # =========================================================
+      - name: 16. Upload Server Logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: minecraft-server-logs
+          path: C:\Minecraft
+          if-no-files-found: ignore
+          retention-days: 1
