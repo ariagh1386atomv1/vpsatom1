@@ -49,10 +49,8 @@ jobs:
 
           Write-Host ""
           Write-Host "========================================="
-          Write-Host " JAVA 21"
+          Write-Host " INSTALLING JAVA 21"
           Write-Host "========================================="
-
-          Write-Host "Installing Temurin Java 21..."
 
           winget install `
             --id EclipseAdoptium.Temurin.21.JDK `
@@ -62,92 +60,252 @@ jobs:
             --accept-source-agreements `
             --disable-interactivity
 
+          Write-Host ""
+          Write-Host "Java 21 installation command completed."
+
           Start-Sleep -Seconds 8
 
+
+      # =========================================================
+      # 3. FIND JAVA 21
+      # =========================================================
+      - name: 3. Find Java 21
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+
           Write-Host ""
-          Write-Host "Searching for Java 21..."
+          Write-Host "========================================="
+          Write-Host " FINDING JAVA 21"
+          Write-Host "========================================="
 
-          $java21Candidates = @()
+          $java21 = $null
 
-          $searchPaths = @(
-              "C:\Program Files\Eclipse Adoptium",
-              "C:\Program Files\Java",
-              "C:\Program Files\AdoptOpenJDK"
+          # -----------------------------------------------------
+          # Possible Java 21 installation locations
+          # -----------------------------------------------------
+
+          $candidatePaths = @(
+              "C:\Program Files\Eclipse Adoptium\jdk-21*\bin\java.exe",
+              "C:\Program Files\Eclipse Adoptium\jdk-21.*\bin\java.exe",
+              "C:\Program Files\Java\jdk-21*\bin\java.exe",
+              "C:\Program Files\AdoptOpenJDK\jdk-21*\bin\java.exe"
           )
 
-          foreach ($path in $searchPaths) {
+          Write-Host ""
+          Write-Host "Checking standard installation paths..."
 
-              if (Test-Path $path) {
+          foreach ($pattern in $candidatePaths) {
 
-                  $found = Get-ChildItem `
-                      -Path $path `
-                      -Recurse `
-                      -Filter "java.exe" `
+              Write-Host ""
+              Write-Host "Checking:"
+              Write-Host $pattern
+
+              $files = Get-ChildItem `
+                  -Path $pattern `
+                  -File `
+                  -ErrorAction SilentlyContinue
+
+              foreach ($file in $files) {
+
+                  Write-Host ""
+                  Write-Host "Candidate:"
+                  Write-Host $file.FullName
+
+                  try {
+
+                      # java -version writes to STDERR on Windows.
+                      # Therefore temporarily allow native stderr.
+
+                      $oldPreference = $ErrorActionPreference
+                      $ErrorActionPreference = "Continue"
+
+                      $versionText = (
+                          & $file.FullName -version 2>&1 |
+                          Out-String
+                      )
+
+                      $ErrorActionPreference = $oldPreference
+
+                      Write-Host $versionText
+
+                      if ($versionText -match 'version "21\.') {
+
+                          $java21 = $file.FullName
+                          break
+                      }
+
+                  }
+                  catch {
+
+                      $ErrorActionPreference = "Stop"
+
+                      Write-Host "Could not test this candidate."
+                  }
+              }
+
+              if ($java21) {
+                  break
+              }
+          }
+
+
+          # -----------------------------------------------------
+          # FALLBACK:
+          # Search Eclipse Adoptium directory directly
+          # -----------------------------------------------------
+
+          if (-not $java21) {
+
+              Write-Host ""
+              Write-Host "Standard paths did not find Java 21."
+              Write-Host "Searching Eclipse Adoptium directory..."
+
+              $adoptiumRoot =
+                  "C:\Program Files\Eclipse Adoptium"
+
+              if (Test-Path $adoptiumRoot) {
+
+                  $directories = Get-ChildItem `
+                      -Path $adoptiumRoot `
+                      -Directory `
                       -ErrorAction SilentlyContinue
 
-                  foreach ($item in $found) {
+                  foreach ($directory in $directories) {
 
-                      try {
+                      Write-Host ""
+                      Write-Host "Checking directory:"
+                      Write-Host $directory.FullName
 
-                          $output = & $item.FullName -version 2>&1 |
+                      $possibleJava =
+                          Join-Path `
+                          $directory.FullName `
+                          "bin\java.exe"
+
+                      if (Test-Path $possibleJava) {
+
+                          $oldPreference =
+                              $ErrorActionPreference
+
+                          $ErrorActionPreference =
+                              "Continue"
+
+                          $versionText = (
+                              & $possibleJava -version 2>&1 |
                               Out-String
+                          )
 
-                          Write-Host ""
-                          Write-Host "Found Java:"
-                          Write-Host $item.FullName
-                          Write-Host $output
+                          $ErrorActionPreference =
+                              $oldPreference
 
-                          if ($output -match 'version "21\.') {
-                              $java21Candidates += $item.FullName
+                          Write-Host $versionText
+
+                          if ($versionText -match 'version "21\.') {
+
+                              $java21 = $possibleJava
+                              break
                           }
-
-                      }
-                      catch {
-                          # Ignore invalid Java binaries
                       }
                   }
               }
           }
 
-          if ($java21Candidates.Count -eq 0) {
+
+          # -----------------------------------------------------
+          # FINAL VALIDATION
+          # -----------------------------------------------------
+
+          if (-not $java21) {
 
               Write-Host ""
-              Write-Host "Java 21 was not found automatically."
+              Write-Host "========================================="
+              Write-Host " JAVA 21 NOT FOUND"
+              Write-Host "========================================="
+
               Write-Host ""
-              Write-Host "Current java command:"
+              Write-Host "Eclipse Adoptium directory:"
 
-              where.exe java 2>&1
+              if (Test-Path "C:\Program Files\Eclipse Adoptium") {
 
-              java -version 2>&1
+                  Get-ChildItem `
+                      "C:\Program Files\Eclipse Adoptium" `
+                      -Recurse `
+                      -ErrorAction SilentlyContinue |
+                      Select-Object FullName |
+                      Out-Host
+              }
 
-              throw "Java 21 installation/path detection failed."
+              Write-Host ""
+              Write-Host "Current java.exe locations:"
+
+              where.exe java 2>&1 |
+                  Out-Host
+
+              Write-Host ""
+              Write-Host "Current default Java:"
+
+              $oldPreference =
+                  $ErrorActionPreference
+
+              $ErrorActionPreference =
+                  "Continue"
+
+              & java -version 2>&1 |
+                  Out-Host
+
+              $ErrorActionPreference =
+                  $oldPreference
+
+              throw "Java 21 was installed but could not be located."
           }
 
-          # Use the first Java 21 installation found
-          $java21 = $java21Candidates[0]
+
+          # -----------------------------------------------------
+          # SUCCESS
+          # -----------------------------------------------------
 
           Write-Host ""
           Write-Host "========================================="
-          Write-Host " SELECTED JAVA 21"
+          Write-Host " JAVA 21 FOUND"
           Write-Host "========================================="
 
+          Write-Host ""
+          Write-Host "Java 21 executable:"
           Write-Host $java21
 
           Write-Host ""
-          Write-Host "Testing selected Java:"
+          Write-Host "Java version:"
 
-          & $java21 -version 2>&1
+          $oldPreference =
+              $ErrorActionPreference
 
-          # Save exact Java path for ALL following steps
+          $ErrorActionPreference =
+              "Continue"
+
+          & $java21 -version 2>&1 |
+              Out-Host
+
+          $ErrorActionPreference =
+              $oldPreference
+
+
+          # Save exact executable path
           "JAVA21_PATH=$java21" |
               Out-File `
               -FilePath $env:GITHUB_ENV `
               -Encoding utf8 `
               -Append
 
-          # Set JAVA_HOME
-          $javaHome = Split-Path `
-              (Split-Path $java21 -Parent) `
+
+          # Save JAVA_HOME
+          $javaBin =
+              Split-Path `
+              $java21 `
+              -Parent
+
+          $javaHome =
+              Split-Path `
+              $javaBin `
               -Parent
 
           "JAVA_HOME=$javaHome" |
@@ -156,65 +314,70 @@ jobs:
               -Encoding utf8 `
               -Append
 
-          # Put Java 21 FIRST in PATH
-          $javaBin = Split-Path $java21 -Parent
-
-          $env:Path = "$javaBin;$env:Path"
 
           Write-Host ""
           Write-Host "JAVA_HOME:"
           Write-Host $javaHome
 
-          Write-Host ""
-          Write-Host "Final java command:"
-
-          & $java21 -version 2>&1
-
 
       # =========================================================
-      # 3. VERIFY JAVA 21 BEFORE DOING ANYTHING ELSE
+      # 4. VERIFY JAVA 21
       # =========================================================
-      - name: 3. Verify Java 21
+      - name: 4. Verify Java 21
         shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
 
           Write-Host ""
           Write-Host "========================================="
-          Write-Host " VERIFY JAVA"
+          Write-Host " VERIFYING JAVA 21"
           Write-Host "========================================="
 
           if (-not $env:JAVA21_PATH) {
-              throw "JAVA21_PATH is missing."
+              throw "JAVA21_PATH environment variable is missing."
           }
 
           if (-not (Test-Path $env:JAVA21_PATH)) {
-              throw "Java 21 executable does not exist: $env:JAVA21_PATH"
+              throw "Java executable does not exist:"
+              + $env:JAVA21_PATH
           }
 
-          Write-Host "Java executable:"
+          Write-Host ""
+          Write-Host "Executable:"
           Write-Host $env:JAVA21_PATH
 
-          Write-Host ""
-          Write-Host "Java version:"
+          $oldPreference =
+              $ErrorActionPreference
 
-          $javaVersion = & $env:JAVA21_PATH -version 2>&1 |
+          $ErrorActionPreference =
+              "Continue"
+
+          $javaVersion = (
+              & $env:JAVA21_PATH -version 2>&1 |
               Out-String
+          )
 
+          $ErrorActionPreference =
+              $oldPreference
+
+          Write-Host ""
           Write-Host $javaVersion
 
           if ($javaVersion -notmatch 'version "21\.') {
+
               throw "The selected Java executable is NOT Java 21."
           }
 
           Write-Host ""
-          Write-Host "JAVA 21 VERIFIED SUCCESSFULLY."
+          Write-Host "========================================="
+          Write-Host " JAVA 21 VERIFIED"
+          Write-Host "========================================="
 
 
       # =========================================================
-      # 4. CREATE MINECRAFT DIRECTORY
+      # 5. CREATE MINECRAFT DIRECTORY
       # =========================================================
-      - name: 4. Create Minecraft Directory
+      - name: 5. Create Minecraft Directory
         shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
@@ -222,6 +385,7 @@ jobs:
           $serverDir = "C:\Minecraft"
 
           if (Test-Path $serverDir) {
+
               Remove-Item `
                   $serverDir `
                   -Recurse `
@@ -235,14 +399,14 @@ jobs:
               Out-Null
 
           Write-Host ""
-          Write-Host "Minecraft directory created:"
+          Write-Host "Minecraft directory:"
           Write-Host $serverDir
 
 
       # =========================================================
-      # 5. DOWNLOAD PAPER 1.21.9
+      # 6. DOWNLOAD PAPER 1.21.9
       # =========================================================
-      - name: 5. Download Paper 1.21.9
+      - name: 6. Download Paper 1.21.9
         shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
@@ -250,12 +414,12 @@ jobs:
           $minecraftVersion = "1.21.9"
           $serverDir = "C:\Minecraft"
 
-          $api = `
+          $api =
               "https://fill.papermc.io/v3/projects/paper/versions/$minecraftVersion/builds"
 
           $headers = @{
               "User-Agent" = "Minecraft-GitHub-Actions-Server/1.0"
-              "Accept"     = "application/json"
+              "Accept" = "application/json"
           }
 
           Write-Host ""
@@ -267,7 +431,7 @@ jobs:
           Write-Host $minecraftVersion
 
           Write-Host ""
-          Write-Host "Paper API:"
+          Write-Host "API:"
           Write-Host $api
 
           $builds = Invoke-RestMethod `
@@ -280,7 +444,7 @@ jobs:
           }
 
           Write-Host ""
-          Write-Host "Available Paper builds:"
+          Write-Host "Available builds:"
 
           foreach ($build in $builds) {
 
@@ -288,10 +452,11 @@ jobs:
                   "Build $($build.id) | Channel: $($build.channel)"
           }
 
-          # 1.21.9 currently has no STABLE build.
-          # Select newest available build.
+          # 1.21.9 currently does not have a STABLE build.
+          # Use newest available build.
 
-          $latestBuild = $builds |
+          $latestBuild =
+              $builds |
               Sort-Object {
                   [int]$_.id
               } -Descending |
@@ -301,8 +466,11 @@ jobs:
               throw "No Paper build found."
           }
 
-          $buildNumber = $latestBuild.id
-          $channel = $latestBuild.channel
+          $buildNumber =
+              $latestBuild.id
+
+          $channel =
+              $latestBuild.channel
 
           $downloadUrl =
               $latestBuild.downloads."server:default".url
@@ -321,11 +489,8 @@ jobs:
           Write-Host "Channel: $channel"
 
           Write-Host ""
-          Write-Host "Download URL:"
+          Write-Host "Downloading:"
           Write-Host $downloadUrl
-
-          Write-Host ""
-          Write-Host "Downloading Paper..."
 
           Invoke-WebRequest `
               -Uri $downloadUrl `
@@ -342,7 +507,7 @@ jobs:
           )
 
           Write-Host ""
-          Write-Host "Paper downloaded successfully."
+          Write-Host "Paper downloaded."
           Write-Host "Build: $buildNumber"
           Write-Host "Channel: $channel"
           Write-Host "Size: $sizeMB MB"
@@ -361,32 +526,28 @@ jobs:
 
 
       # =========================================================
-      # 6. ACCEPT EULA
+      # 7. ACCEPT EULA
       # =========================================================
-      - name: 6. Accept Minecraft EULA
+      - name: 7. Accept Minecraft EULA
         shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
 
-          Set-Location C:\Minecraft
-
           "eula=true" |
               Set-Content `
-              -Path "eula.txt" `
+              -Path "C:\Minecraft\eula.txt" `
               -Encoding ASCII
 
           Write-Host "Minecraft EULA accepted."
 
 
       # =========================================================
-      # 7. SERVER CONFIGURATION
+      # 8. SERVER CONFIGURATION
       # =========================================================
-      - name: 7. Configure Minecraft Server
+      - name: 8. Configure Minecraft Server
         shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
-
-          $serverDir = "C:\Minecraft"
 
           $properties = @"
           server-port=25565
@@ -409,20 +570,21 @@ jobs:
 
           $properties |
               Set-Content `
-              -Path "$serverDir\server.properties" `
+              -Path "C:\Minecraft\server.properties" `
               -Encoding ASCII
 
           Write-Host ""
           Write-Host "SERVER CONFIGURATION:"
           Write-Host ""
 
-          Get-Content "$serverDir\server.properties"
+          Get-Content `
+              "C:\Minecraft\server.properties"
 
 
       # =========================================================
-      # 8. WINDOWS FIREWALL
+      # 9. WINDOWS FIREWALL
       # =========================================================
-      - name: 8. Configure Windows Firewall
+      - name: 9. Configure Windows Firewall
         shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
@@ -449,19 +611,11 @@ jobs:
           Write-Host ""
           Write-Host "Firewall rule created."
 
-          Get-NetFirewallRule `
-              -DisplayName "Minecraft Server TCP 25565" |
-              Format-List `
-                  DisplayName,
-                  Enabled,
-                  Direction,
-                  Action
-
 
       # =========================================================
-      # 9. RAM
+      # 10. CONFIGURE RAM
       # =========================================================
-      - name: 9. Configure Minecraft RAM
+      - name: 10. Configure Minecraft RAM
         shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
@@ -475,12 +629,17 @@ jobs:
           Write-Host "Total RAM: $totalRAM GB"
 
           if ($totalRAM -ge 8) {
+
               $minecraftRAM = "6G"
+
           }
           elseif ($totalRAM -ge 6) {
+
               $minecraftRAM = "4G"
+
           }
           else {
+
               $minecraftRAM = "3G"
           }
 
@@ -494,9 +653,9 @@ jobs:
 
 
       # =========================================================
-      # 10. START MINECRAFT WITH EXPLICIT JAVA 21
+      # 11. START MINECRAFT
       # =========================================================
-      - name: 10. Start Minecraft Server
+      - name: 11. Start Minecraft Server
         shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
@@ -511,20 +670,31 @@ jobs:
           Write-Host "========================================="
 
           Write-Host ""
-          Write-Host "Java executable:"
+          Write-Host "Using Java:"
           Write-Host $env:JAVA21_PATH
 
           Write-Host ""
           Write-Host "Java version:"
-          & $env:JAVA21_PATH -version 2>&1
+
+          $oldPreference =
+              $ErrorActionPreference
+
+          $ErrorActionPreference =
+              "Continue"
+
+          & $env:JAVA21_PATH -version 2>&1 |
+              Out-Host
+
+          $ErrorActionPreference =
+              $oldPreference
 
           Write-Host ""
           Write-Host "Minecraft RAM:"
           Write-Host $env:MINECRAFT_RAM
 
           # IMPORTANT:
-          # We DO NOT use "java".
-          # We use the exact Java 21 executable.
+          # Never use "java" here.
+          # Use the exact Java 21 executable.
 
           $javaArgs = @(
               "-Xms$env:MINECRAFT_RAM",
@@ -554,7 +724,7 @@ jobs:
           Write-Host "Minecraft PID: $($process.Id)"
 
           Write-Host ""
-          Write-Host "Waiting for Minecraft server..."
+          Write-Host "Waiting for server..."
 
           $ready = $false
 
@@ -578,17 +748,17 @@ jobs:
                   if ($log -match "UnsupportedClassVersionError") {
 
                       Write-Host ""
-                      Write-Host "JAVA VERSION ERROR DETECTED."
+                      Write-Host "JAVA VERSION ERROR!"
 
-                      Get-Content `
-                          "$serverDir\server-error.log" `
-                          -Tail 100
+                      if (Test-Path "$serverDir\server-error.log") {
 
-                      throw "Paper is not running with Java 21."
-                  }
+                          Get-Content `
+                              "$serverDir\server-error.log" `
+                              -Tail 100
+                      }
 
-                  if ($log -match "Failed to start") {
-                      break
+                      throw `
+                          "Minecraft is not running with Java 21."
                   }
               }
 
@@ -603,6 +773,7 @@ jobs:
               Write-Host "========================================="
 
               if (Test-Path "$serverDir\server.log") {
+
                   Get-Content `
                       "$serverDir\server.log" `
                       -Tail 150
@@ -614,6 +785,7 @@ jobs:
               Write-Host "========================================="
 
               if (Test-Path "$serverDir\server-error.log") {
+
                   Get-Content `
                       "$serverDir\server-error.log" `
                       -Tail 150
@@ -629,9 +801,9 @@ jobs:
 
 
       # =========================================================
-      # 11. LOCAL PORT TEST
+      # 12. TEST LOCAL MINECRAFT PORT
       # =========================================================
-      - name: 11. Test Minecraft Port
+      - name: 12. Test Minecraft Port
         shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
@@ -640,30 +812,36 @@ jobs:
           Write-Host "Testing 127.0.0.1:25565..."
 
           $result = Test-NetConnection `
-              -ComputerName 127.0.0.1 `
+              -ComputerName "127.0.0.1" `
               -Port 25565 `
               -WarningAction SilentlyContinue
 
           if (-not $result.TcpTestSucceeded) {
-              throw "Minecraft TCP 25565 is NOT reachable."
+
+              throw `
+                  "Minecraft TCP port 25565 is NOT reachable."
           }
 
           Write-Host ""
-          Write-Host "SUCCESS!"
+          Write-Host "========================================="
+          Write-Host " LOCAL MINECRAFT PORT OK"
+          Write-Host "========================================="
+
+          Write-Host ""
           Write-Host "127.0.0.1:25565 is OPEN."
 
 
       # =========================================================
-      # 12. INSTALL PLAYIT
+      # 13. INSTALL PLAYIT
       # =========================================================
-      - name: 12. Install Playit
+      - name: 13. Install Playit
         shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
 
           Write-Host ""
           Write-Host "========================================="
-          Write-Host " INSTALL PLAYIT"
+          Write-Host " INSTALLING PLAYIT"
           Write-Host "========================================="
 
           winget install `
@@ -676,7 +854,7 @@ jobs:
 
           Start-Sleep -Seconds 5
 
-          $env:Path = `
+          $env:Path =
               [System.Environment]::GetEnvironmentVariable(
                   "Path",
                   "Machine"
@@ -698,7 +876,9 @@ jobs:
               Select-Object -First 1
 
           if (-not $playit) {
-              throw "playit.exe was not found."
+
+              throw `
+                  "playit.exe was not found after installation."
           }
 
           Write-Host ""
@@ -713,24 +893,24 @@ jobs:
 
 
       # =========================================================
-      # 13. START PLAYIT
+      # 14. START PLAYIT
       # =========================================================
-      - name: 13. Start Playit Tunnel
+      - name: 14. Start Playit Tunnel
         shell: powershell
         env:
           PLAYIT_SECRET: ${{ secrets.PLAYIT_SECRET }}
         run: |
           $ErrorActionPreference = "Stop"
 
-          if ([string]::IsNullOrWhiteSpace($env:PLAYIT_SECRET)) {
+          if ([string]::IsNullOrWhiteSpace(
+              $env:PLAYIT_SECRET
+          )) {
 
               throw @"
           PLAYIT_SECRET is missing.
 
-          Go to:
+          GitHub Repository:
 
-          Repository
-          ->
           Settings
           ->
           Secrets and variables
@@ -742,8 +922,6 @@ jobs:
           Name:
 
           PLAYIT_SECRET
-
-          Then put your Playit Agent Secret there.
           "@
           }
 
@@ -776,7 +954,9 @@ jobs:
               "C:\Minecraft\playit.pid" `
               -Encoding ASCII
 
-          Write-Host "Playit PID: $($process.Id)"
+          Write-Host ""
+          Write-Host "Playit PID:"
+          Write-Host $process.Id
 
           Start-Sleep -Seconds 15
 
@@ -784,6 +964,7 @@ jobs:
           Write-Host "========== PLAYIT LOG =========="
 
           if (Test-Path $playitLog) {
+
               Get-Content `
                   $playitLog `
                   -Tail 100
@@ -793,6 +974,7 @@ jobs:
           Write-Host "========== PLAYIT ERROR =========="
 
           if (Test-Path $playitError) {
+
               Get-Content `
                   $playitError `
                   -Tail 100
@@ -800,9 +982,9 @@ jobs:
 
 
       # =========================================================
-      # 14. FIND PUBLIC ADDRESS
+      # 15. FIND PUBLIC ADDRESS
       # =========================================================
-      - name: 14. Find Public Minecraft Address
+      - name: 15. Find Public Minecraft Address
         shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
@@ -812,7 +994,7 @@ jobs:
 
           Write-Host ""
           Write-Host "========================================="
-          Write-Host " FIND PUBLIC MINECRAFT ADDRESS"
+          Write-Host " FINDING PUBLIC ADDRESS"
           Write-Host "========================================="
 
           $publicAddress = $null
@@ -822,7 +1004,10 @@ jobs:
               Start-Sleep -Seconds 5
 
               if (-not (Test-Path $logFile)) {
-                  Write-Host "Playit log not ready... $i/36"
+
+                  Write-Host `
+                      "Playit log not ready... $i/36"
+
                   continue
               }
 
@@ -831,7 +1016,6 @@ jobs:
                   -Raw `
                   -ErrorAction SilentlyContinue
 
-              # Standard Playit addresses
               $matches = [regex]::Matches(
                   $log,
                   '(?i)([a-z0-9.-]+\.(?:playit\.gg|gl\.at\.ply\.gg)):(\d+)'
@@ -858,7 +1042,8 @@ jobs:
                   break
               }
 
-              Write-Host "Public address not found yet... $i/36"
+              Write-Host `
+                  "Public address not found yet... $i/36"
           }
 
           Write-Host ""
@@ -881,7 +1066,6 @@ jobs:
               Write-Host "5"
 
               Write-Host ""
-              Write-Host "========================================="
 
               "MINECRAFT_PUBLIC_ADDRESS=$publicAddress" |
                   Out-File `
@@ -890,7 +1074,7 @@ jobs:
                   -Append
 
               @"
-          # 🎮 Minecraft Server
+          # Minecraft Server
 
           ## Public Address
 
@@ -898,23 +1082,23 @@ jobs:
 
           ## Version
 
-          Minecraft Java **1.21.9**
+          Minecraft Java 1.21.9
 
           ## Max Players
 
-          **5**
+          5
 
           ## Paper Build
 
-          **$env:PAPER_BUILD**
+          $env:PAPER_BUILD
 
           ## Paper Channel
 
-          **$env:PAPER_CHANNEL**
+          $env:PAPER_CHANNEL
 
-          ## Minecraft RAM
+          ## RAM
 
-          **$env:MINECRAFT_RAM**
+          $env:MINECRAFT_RAM
           "@ |
                   Out-File `
                   -FilePath $env:GITHUB_STEP_SUMMARY `
@@ -929,6 +1113,7 @@ jobs:
               Write-Host "========== PLAYIT LOG =========="
 
               if (Test-Path $logFile) {
+
                   Get-Content $logFile
               }
 
@@ -936,28 +1121,30 @@ jobs:
               Write-Host "========== PLAYIT ERROR =========="
 
               if (Test-Path "C:\Minecraft\playit-error.log") {
+
                   Get-Content `
                       "C:\Minecraft\playit-error.log"
               }
 
-              throw "Could not detect Playit public address."
+              throw `
+                  "Could not detect Playit public address."
           }
 
 
       # =========================================================
-      # 15. FINAL STATUS
+      # 16. FINAL STATUS
       # =========================================================
-      - name: 15. Final Server Status
+      - name: 16. Final Server Status
         shell: powershell
         run: |
           Write-Host ""
           Write-Host "========================================="
-          Write-Host " FINAL MINECRAFT SERVER STATUS"
+          Write-Host " FINAL SERVER STATUS"
           Write-Host "========================================="
 
           Write-Host ""
-          Write-Host "Java:"
-          & $env:JAVA21_PATH -version 2>&1
+          Write-Host "Java 21:"
+          Write-Host $env:JAVA21_PATH
 
           Write-Host ""
           Write-Host "Minecraft RAM:"
@@ -966,8 +1153,11 @@ jobs:
           Write-Host ""
           Write-Host "Minecraft process:"
 
-          Get-Process java `
+          Get-Process `
               -ErrorAction SilentlyContinue |
+              Where-Object {
+                  $_.ProcessName -eq "java"
+              } |
               Select-Object `
                   Id,
                   ProcessName,
@@ -975,7 +1165,7 @@ jobs:
                   WorkingSet64
 
           Write-Host ""
-          Write-Host "Listening port:"
+          Write-Host "Listening on port 25565:"
 
           Get-NetTCPConnection `
               -LocalPort 25565 `
@@ -988,22 +1178,25 @@ jobs:
                   OwningProcess
 
           Write-Host ""
-          Write-Host "PUBLIC MINECRAFT ADDRESS:"
+          Write-Host "========================================="
+          Write-Host " PUBLIC MINECRAFT ADDRESS"
+          Write-Host "========================================="
 
+          Write-Host ""
           Write-Host $env:MINECRAFT_PUBLIC_ADDRESS
 
 
       # =========================================================
-      # 16. KEEP SERVER ALIVE
+      # 17. KEEP SERVER ALIVE
       # =========================================================
-      - name: 16. Keep Minecraft Server Alive
+      - name: 17. Keep Minecraft Server Alive
         shell: powershell
         run: |
           $ErrorActionPreference = "Continue"
 
           Write-Host ""
           Write-Host "========================================="
-          Write-Host " MINECRAFT SERVER IS RUNNING"
+          Write-Host " MINECRAFT SERVER RUNNING"
           Write-Host "========================================="
 
           Write-Host ""
@@ -1011,22 +1204,26 @@ jobs:
           Write-Host $env:MINECRAFT_PUBLIC_ADDRESS
 
           Write-Host ""
-          Write-Host "VERSION: 1.21.9"
-          Write-Host "PAPER BUILD: $env:PAPER_BUILD"
-          Write-Host "PLAYERS: 5"
+          Write-Host "Minecraft: 1.21.9"
+          Write-Host "Paper Build: $env:PAPER_BUILD"
+          Write-Host "Players: 5"
           Write-Host "RAM: $env:MINECRAFT_RAM"
+
           Write-Host ""
 
-          # GitHub job maximum = 360 minutes.
-          # Keep server alive for ~5h45m.
+          # GitHub Actions maximum is 360 minutes.
+          # Keep server alive approximately 5h45m.
 
           for ($i = 1; $i -le 345; $i++) {
 
               Start-Sleep -Seconds 60
 
               $minecraft =
-                  Get-Process java `
-                      -ErrorAction SilentlyContinue
+                  Get-Process `
+                      -ErrorAction SilentlyContinue |
+                  Where-Object {
+                      $_.ProcessName -eq "java"
+                  }
 
               if (-not $minecraft) {
 
@@ -1049,9 +1246,9 @@ jobs:
 
 
       # =========================================================
-      # 17. UPLOAD LOGS
+      # 18. UPLOAD LOGS
       # =========================================================
-      - name: 17. Upload Minecraft Logs
+      - name: 18. Upload Minecraft Logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
